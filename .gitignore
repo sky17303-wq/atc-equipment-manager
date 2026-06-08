@@ -1,0 +1,48 @@
+# secrets and local env
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+.next/
+dist/
+build/
+.cache/
+.turbo/
+.vercel/
+out/
+
+# logs and runtime
+*.log
+logs/
+pm2-*.log
+.DS_Store
+Thumbs.db
+
+# backups and temporary files
+*.bak
+*.bak.*
+*.backup
+*_backup_*/
+backups/
+backup/
+*.tmp
+*.swp
+
+# databases/uploads/runtime data
+*.sqlite
+*.sqlite3
+*.db
+uploads/
+data/
+database/*.sqlite
+database/*.db
+data/

@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ATC 교구 관리 시스템</title>
+    <link rel="icon" href="/equipment/favicon.ico?v=20260608" type="image/x-icon" sizes="any">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="주요 메뉴">
+        <div class="brand">
+          <div class="brand-mark">ATC</div>
+          <div>
+            <strong>교구 관리</strong>
+            <span>ERP 연동 초안</span>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" data-section="dashboard" type="button">대시보드</button>
+          <button class="nav-item" data-section="ai" type="button">AI 대여 신청</button>
+          <button class="nav-item" data-section="inventory" type="button">교구 목록</button>
+          <button class="nav-item" data-section="calendar" type="button">예약 캘린더</button>
+          <button class="nav-item" data-section="operations" type="button">승인/반출/반납</button>
+          <button class="nav-item" data-section="members" type="button">회원 관리</button>
+          <button class="nav-item" data-section="stats" type="button">통계/라벨</button>
+          <button class="nav-item" data-section="erd" type="button">DB/ERD</button>
+        </nav>
+
+        <div class="login-panel">
+          <span class="eyebrow">ERP 계정</span>
+          <strong id="session-name">운영담당자</strong>
+          <small id="session-email">staff@ssem.re.kr</small>
+          <label class="role-control">
+            권한
+            <select id="role-select">
+              <option value="staff" selected>담당자</option>
+              <option value="admin">관리자</option>
+              <option value="applicant">일반 대여자</option>
+              <option value="auditor">조회 전용</option>
+            </select>
+          </label>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">컴퓨팅교사협회</p>
+            <h1 id="page-title">교구 운영 대시보드</h1>
+          </div>
+          <div class="top-actions">
+            <span id="gemini-badge" class="status-pill">AI 확인중</span>
+            <a class="ghost-link" href="api/health" target="_blank" rel="noreferrer">API 상태</a>
+          </div>
+        </header>
+
+        <section id="dashboard" class="view active-view">
+          <div class="dashboard-grid">
+            <section class="dashboard-summary">
+              <div class="summary-heading">
+                <div>
+                  <p class="eyebrow">오늘의 운영</p>
+                  <h2>교구 대여 흐름을 업무 순서대로 확인합니다.</h2>
+                </div>
+                <span class="status-pill neutral">운영 베타</span>
+              </div>
+
+              <div class="metric-row">
+                <div class="metric-card">
+                  <span>전체 품목</span>
+                  <strong id="metric-items">0</strong>
+                </div>
+                <div class="metric-card">
+                  <span>대여 가능 기준</span>
+                  <strong id="metric-rentable">0</strong>
+                </div>
+                <div class="metric-card">
+                  <span>승인 대기</span>
+                  <strong id="metric-submitted">0</strong>
+                </div>
+                <div class="metric-card">
+                  <span>예약 점유</span>
+                  <strong id="metric-occupied">0</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="operations-rail">
+              <div class="asset-strip">
+                <img class="equipment-thumb" src="assets/equipment-overview-v2.png" alt="로봇, 태블릿, 센서보드 교구 이미지">
+                <div>
+                  <strong>ATC 교구 자산</strong>
+                  <small>목록, 예약, 검수 이력을 한 곳에서 관리</small>
+                </div>
+              </div>
+              <div class="quick-grid">
+                <button class="quick-action" data-jump="ai" type="button">신청 생성</button>
+                <button class="quick-action" data-jump="operations" type="button">승인 처리</button>
+                <button class="quick-action" data-jump="inventory" type="button">재고 확인</button>
+                <button class="quick-action" data-jump="stats" type="button">라벨 출력</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="workflow-band">
+            <div>
+              <p class="eyebrow">오늘의 운영</p>
+              <strong>신청 접수</strong>
+              <small>AI 신청 또는 품목 목록에서 초안 생성</small>
+            </div>
+            <div>
+              <p class="eyebrow">담당자</p>
+              <strong>승인/반출</strong>
+              <small>수량 검증 후 예약 확정과 반출 처리</small>
+            </div>
+            <div>
+              <p class="eyebrow">창고</p>
+              <strong>반납 검수</strong>
+              <small>정상/파손/수리/분실 수량 기록</small>
+            </div>
+            <div>
+              <p class="eyebrow">운영</p>
+              <strong>통계/라벨</strong>
+              <small>재고 현황, QR 라벨, 일괄 반영</small>
+            </div>
+          </div>
+
+          <div class="content-grid dashboard-lists">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>승인 대기</h3>
+                <button class="small-action" data-jump="operations" type="button">열기</button>
+              </div>
+              <div id="pending-list" class="compact-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3>재고 이슈</h3>
+                <button class="small-action" data-jump="inventory" type="button">목록</button>
+              </div>
+              <div id="issue-list" class="compact-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="ai" class="view">
+          <div class="ai-layout">
+            <form id="ai-form" class="panel ai-form">
+              <div class="panel-header">
+                <h3>AI 대여 신청</h3>
+                <span class="status-pill neutral" id="ai-mode">로컬 파서</span>
+              </div>
+
+              <label for="prompt">요청 내용</label>
+              <textarea id="prompt" name="prompt" rows="7">6월 10일부터 14일까지 햄스터S 30대랑 AI카메라 10대 빌릴 수 있어? 기관은 새싹초등학교고 담당자는 김교사야.</textarea>
+
+              <div class="date-grid">
+                <label>
+                  시작일
+                  <input id="ai-start-date" type="date" value="2026-06-10">
+                </label>
+                <label>
+                  종료일
+                  <input id="ai-end-date" type="date" value="2026-06-14">
+                </label>
+              </div>
+
+              <button class="primary-action" type="submit">가능 수량 확인</button>
+            </form>
+
+            <section class="panel result-panel">
+              <div class="panel-header">
+                <h3>신청서 초안</h3>
+                <button id="submit-draft" class="small-action" type="button" disabled>신청 제출</button>
+              </div>
+              <div id="ai-result" class="result-empty">요청을 입력하면 기간별 예약과 대여중 수량을 반영해 초안을 만듭니다.</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="inventory" class="view">
+          <section class="panel">
+            <div class="panel-header wrap">
+              <h3>교구 목록</h3>
+              <div class="filter-row" id="category-filters"></div>
+            </div>
+            <div class="toolbar">
+              <input id="inventory-search" type="search" placeholder="품목명, 코드, 분류 검색">
+              <button class="small-action" id="clear-search" type="button">초기화</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>코드</th>
+                    <th>품목</th>
+                    <th>분류</th>
+                    <th>총수량</th>
+                    <th>제외</th>
+                    <th>대여 기준</th>
+                    <th>비고</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody id="inventory-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <div class="inventory-tools">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>품목 등록/수정</h3>
+                <span class="status-pill neutral">관리자</span>
+              </div>
+              <form id="inventory-form" class="inventory-form">
+                <input id="inventory-id" type="hidden">
+                <div class="return-grid">
+                  <label>
+                    코드
+                    <input id="item-code" type="text" placeholder="R99">
+                  </label>
+                  <label>
+                    품목명
+                    <input id="item-name" type="text" placeholder="신규 교구">
+                  </label>
+                  <label>
+                    분류
+                    <input id="item-category" type="text" placeholder="로봇">
+                  </label>
+                  <label>
+                    단위
+                    <input id="item-unit" type="text" value="개">
+                  </label>
+                  <label>
+                    총수량
+                    <input id="item-total" type="number" min="0" value="0">
+                  </label>
+                  <label>
+                    제외
+                    <input id="item-unavailable" type="number" min="0" value="0">
+                  </label>
+                  <label>
+                    대여 기준
+                    <input id="item-rentable" type="number" min="0" value="0">
+                  </label>
+                  <label>
+                    추적 방식
+                    <select id="item-unit-type">
+                      <option value="quantity">수량형</option>
+                      <option value="serialized">개별 번호형</option>
+                      <option value="kit">세트형</option>
+                      <option value="book">교재</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  비고/검색어
+                  <textarea id="item-notes" rows="3" placeholder="상태, 구성품, 검색 키워드"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button class="primary-action" type="submit">저장</button>
+                  <button class="small-action" id="inventory-form-clear" type="button">비우기</button>
+                  <span id="inventory-form-hint" class="hint-text">관리자 권한에서 저장할 수 있습니다.</span>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3>엑셀/CSV 일괄 반영</h3>
+                <span class="status-pill neutral">5차 준비</span>
+              </div>
+              <form id="csv-form" class="csv-form">
+                <label>
+                  CSV 내용
+                  <textarea id="csv-input" rows="8">code,name,category,totalQuantity,unavailableQuantity,rentableQuantity,unit,unitType,notes
+R99,테스트 교구,로봇,10,0,10,대,serialized,일괄 업로드 예시</textarea>
+                </label>
+                <div class="form-actions">
+                  <button class="primary-action" type="submit">일괄 반영</button>
+                  <span id="csv-hint" class="hint-text">code 기준으로 추가 또는 수정합니다.</span>
+                </div>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section id="calendar" class="view">
+          <section class="panel">
+            <div class="panel-header">
+              <h3>예약 점유 일정</h3>
+              <span class="status-pill neutral">확정/승인대기/반출</span>
+            </div>
+            <div id="reservation-timeline" class="timeline"></div>
+          </section>
+        </section>
+
+        <section id="operations" class="view">
+          <section class="panel">
+            <div class="panel-header">
+              <h3>승인/반출/반납</h3>
+              <span class="status-pill neutral">담당자 화면</span>
+            </div>
+            <div id="application-board" class="application-board"></div>
+          </section>
+
+          <section class="panel return-panel">
+            <div class="panel-header">
+              <h3>번호 없는 교구 반납 검수</h3>
+              <span class="status-pill neutral">수량형 처리</span>
+            </div>
+            <form id="return-form" class="return-form">
+              <div class="return-grid">
+                <label>
+                  품목
+                  <select id="return-item"></select>
+                </label>
+                <label>
+                  기관
+                  <input id="return-organization" type="text" value="새싹초등학교">
+                </label>
+                <label>
+                  반출 수량
+                  <input id="return-checked-out" type="number" min="1" value="10">
+                </label>
+                <label>
+                  정상 반납
+                  <input id="return-normal" type="number" min="0" value="8">
+                </label>
+                <label>
+                  파손
+                  <input id="return-damaged" type="number" min="0" value="1">
+                </label>
+                <label>
+                  수리 필요
+                  <input id="return-repair" type="number" min="0" value="1">
+                </label>
+                <label>
+                  분실
+                  <input id="return-lost" type="number" min="0" value="0">
+                </label>
+              </div>
+              <label>
+                검수 메모
+                <textarea id="return-note" rows="3">정상으로 반출했으나 반납 시 일부 불량 확인. 개별 번호가 없어 수량 기준으로 기록.</textarea>
+              </label>
+              <div class="form-actions">
+                <button class="primary-action" type="submit">검수 기록</button>
+                <span id="return-total-hint" class="hint-text">합계 확인중</span>
+              </div>
+            </form>
+            <div id="return-inspection-list" class="compact-list return-list"></div>
+          </section>
+        </section>
+
+        <section id="members" class="view">
+          <div class="member-summary-grid" id="member-summary"></div>
+
+          <section class="panel">
+            <div class="panel-header wrap">
+              <h3>회원 목록</h3>
+              <div class="toolbar member-toolbar">
+                <input id="member-search" type="search" placeholder="이름, 이메일, 기관 검색">
+                <select id="member-status-filter">
+                  <option value="전체">전체 상태</option>
+                  <option value="active">활성</option>
+                  <option value="pending">승인대기</option>
+                  <option value="suspended">정지</option>
+                  <option value="archived">보관</option>
+                </select>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="member-table">
+                <thead>
+                  <tr>
+                    <th>회원</th>
+                    <th>기관</th>
+                    <th>권한</th>
+                    <th>상태</th>
+                    <th>ERP 식별자</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody id="member-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <div class="member-tools">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>회원 등록/수정</h3>
+                <span class="status-pill neutral">관리자</span>
+              </div>
+              <form id="member-form" class="member-form">
+                <input id="member-id" type="hidden">
+                <div class="return-grid">
+                  <label>
+                    이름
+                    <input id="member-name" type="text" placeholder="홍길동">
+                  </label>
+                  <label>
+                    이메일
+                    <input id="member-email" type="email" placeholder="name@ssem.re.kr">
+                  </label>
+                  <label>
+                    기관
+                    <select id="member-organization"></select>
+                  </label>
+                  <label>
+                    권한
+                    <select id="member-role">
+                      <option value="applicant">일반 대여자</option>
+                      <option value="staff">담당자</option>
+                      <option value="admin">관리자</option>
+                      <option value="auditor">조회 전용</option>
+                    </select>
+                  </label>
+                  <label>
+                    상태
+                    <select id="member-status">
+                      <option value="active">활성</option>
+                      <option value="pending">승인대기</option>
+                      <option value="suspended">정지</option>
+                      <option value="archived">보관</option>
+                    </select>
+                  </label>
+                  <label>
+                    ERP 식별자
+                    <input id="member-erp-id" type="text" placeholder="Supabase user id">
+                  </label>
+                  <label>
+                    연락처
+                    <input id="member-phone" type="text" placeholder="선택 입력">
+                  </label>
+                </div>
+                <label>
+                  운영 메모
+                  <textarea id="member-memo" rows="3" placeholder="권한 부여 사유, 소속 확인 메모"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button class="primary-action" type="submit">회원 저장</button>
+                  <button class="small-action" id="member-form-clear" type="button">비우기</button>
+                  <span id="member-form-hint" class="hint-text">관리자 권한에서 저장할 수 있습니다.</span>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3>기관 관리</h3>
+                <span class="status-pill neutral">소속/대여처</span>
+              </div>
+              <form id="organization-form" class="member-form">
+                <input id="organization-id" type="hidden">
+                <div class="return-grid org-grid">
+                  <label>
+                    기관명
+                    <input id="organization-name" type="text" placeholder="학교 또는 회사명">
+                  </label>
+                  <label>
+                    유형
+                    <select id="organization-type">
+                      <option value="association">협회</option>
+                      <option value="school">학교</option>
+                      <option value="company">회사</option>
+                      <option value="individual_teacher">개인 교사</option>
+                      <option value="partner">협력기관</option>
+                      <option value="other">기타</option>
+                    </select>
+                  </label>
+                  <label>
+                    상태
+                    <select id="organization-status">
+                      <option value="active">활성</option>
+                      <option value="inactive">비활성</option>
+                    </select>
+                  </label>
+                  <label>
+                    담당자 이메일
+                    <input id="organization-manager-email" type="email" placeholder="manager@ssem.re.kr">
+                  </label>
+                  <label>
+                    대표 이메일
+                    <input id="organization-contact-email" type="email" placeholder="contact@example.com">
+                  </label>
+                </div>
+                <label>
+                  기관 메모
+                  <textarea id="organization-notes" rows="3" placeholder="대여 한도, 운영 주의사항"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button class="primary-action" type="submit">기관 저장</button>
+                  <button class="small-action" id="organization-form-clear" type="button">비우기</button>
+                  <span id="organization-form-hint" class="hint-text">회원의 소속 선택지로 사용됩니다.</span>
+                </div>
+              </form>
+              <div id="organization-list" class="compact-list organization-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="stats" class="view">
+          <div class="content-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>운영 통계</h3>
+                <span class="status-pill neutral">실시간 집계</span>
+              </div>
+              <div id="stats-grid" class="stats-grid"></div>
+              <div id="category-stats" class="compact-list category-stats"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3>QR/바코드 라벨</h3>
+                <button class="small-action" id="print-labels" type="button">인쇄</button>
+              </div>
+              <div id="label-grid" class="label-grid"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="erd" class="view">
+          <div class="content-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>핵심 테이블</h3>
+                <a class="small-action" href="docs/02-db-erd.md" target="_blank" rel="noreferrer">문서</a>
+              </div>
+              <div class="schema-list">
+                <div><strong>equipment_items</strong><span>품목 마스터와 대여 기준 수량</span></div>
+                <div><strong>equipment_assets</strong><span>번호가 있는 장비만 선택 사용</span></div>
+                <div><strong>inventory_condition_balances</strong><span>번호 없는 교구의 정상/파손/수리/분실 수량</span></div>
+                <div><strong>rental_applications</strong><span>신청 헤더와 승인 상태</span></div>
+                <div><strong>reservations</strong><span>기간별 재고 선점</span></div>
+                <div><strong>loans / returns</strong><span>반출과 수량형 반납 검수</span></div>
+                <div><strong>ai_conversations</strong><span>AI 신청 대화 로그</span></div>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h3>가용 수량 공식</h3>
+              </div>
+              <pre class="formula">대여가능 =
+총 보유
+- 상시 제외
+- 반납 검수 불량
+- 기간 내 예약
+- 기간 내 대여중
+- 승인대기 선점</pre>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

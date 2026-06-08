@@ -1,0 +1,19 @@
+{
+  "name": "atc-equipment-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ATC 교구 관리 시스템 로컬 MVP 초안",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js && node --check scripts/verify-flow.js && node --check scripts/postgres-migrate.js && node --check scripts/postgres-seed.js",
+    "verify": "node scripts/verify-flow.js",
+    "db:migrate": "node scripts/postgres-migrate.js",
+    "db:seed": "node scripts/postgres-seed.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}
