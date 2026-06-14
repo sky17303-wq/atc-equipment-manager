@@ -2600,6 +2600,25 @@ async function serveStatic(req, res, url) {
     });
     res.end(content);
   } catch {
+    const acceptsHtml = String(req.headers.accept || "").includes("text/html");
+    const hasExtension = Boolean(path.extname(requestedPath));
+
+    // SPA fallback: allow direct links such as /equipment/dashboard to load the app shell.
+    if (req.method === "GET" && acceptsHtml && !hasExtension) {
+      try {
+        const indexPath = path.join(PUBLIC_DIR, "index.html");
+        const content = await fs.readFile(indexPath);
+        res.writeHead(200, {
+          "Content-Type": CONTENT_TYPES[".html"] || "text/html; charset=utf-8",
+          "Cache-Control": "no-store"
+        });
+        res.end(content);
+        return;
+      } catch {
+        // Fall through to the normal 404 if the app shell is unavailable.
+      }
+    }
+
     sendText(res, "Not found", 404);
   }
 }
