@@ -24,6 +24,7 @@
           <button class="nav-item" data-section="inventory" type="button">교구 목록</button>
           <button class="nav-item" data-section="calendar" type="button">예약 캘린더</button>
           <button class="nav-item" data-section="operations" type="button">승인/반출/반납</button>
+          <button class="nav-item" data-section="scan" type="button">QR 스캔</button>
           <button class="nav-item" data-section="members" type="button">회원 관리</button>
           <button class="nav-item" data-section="stats" type="button">통계/라벨</button>
           <button class="nav-item" data-section="erd" type="button">DB/ERD</button>
@@ -367,6 +368,42 @@ R99,테스트 교구,로봇,10,0,10,대,serialized,일괄 업로드 예시</text
           </section>
         </section>
 
+        <section id="scan" class="view">
+          <div class="content-grid scan-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>QR 코드 스캔</h3>
+                <span class="status-pill neutral" id="scan-support">지원 확인중</span>
+              </div>
+              <p class="hint-text scan-guide">교구 라벨의 QR 코드를 후면 카메라로 비추면 품목 정보를 바로 확인합니다.</p>
+              <div class="scan-stage">
+                <video id="scan-video" playsinline muted></video>
+                <div id="scan-overlay" class="scan-overlay">카메라가 꺼져 있습니다.</div>
+              </div>
+              <div class="form-actions">
+                <button class="primary-action" id="scan-start" type="button">스캔 시작</button>
+                <button class="small-action" id="scan-stop" type="button" disabled>정지</button>
+              </div>
+              <p id="scan-hint" class="hint-text">스캔 시작을 누르면 카메라 권한을 요청합니다.</p>
+              <form id="scan-manual-form" class="scan-manual">
+                <label>
+                  수동 코드 입력 (카메라 미지원 시)
+                  <input id="scan-manual-input" type="text" placeholder="품목 코드 (예: R01) 또는 QR 문자열" autocomplete="off">
+                </label>
+                <button class="small-action" type="submit">품목 조회</button>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3>스캔 결과</h3>
+                <span class="status-pill neutral">품목/신청 확인</span>
+              </div>
+              <div id="scan-result" class="result-empty">QR을 스캔하거나 품목 코드를 입력하면 품목 정보와 활성 신청이 표시됩니다.</div>
+            </section>
+          </div>
+        </section>
+
         <section id="members" class="view">
           <div class="member-summary-grid" id="member-summary"></div>
 
@@ -578,6 +615,7 @@ R99,테스트 교구,로봇,10,0,10,대,serialized,일괄 업로드 예시</text
       </main>
     </div>
 
+    <script src="vendor/qrcode.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

@@ -805,6 +805,19 @@ tbody tr:hover {
   font-size: 0.72rem;
 }
 
+/* 실제 QR SVG 컨테이너 (vendor/qrcode.js 생성물) */
+.label-qr {
+  width: 72px;
+  height: 72px;
+  background: #ffffff;
+}
+
+.label-qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .fake-qr {
   width: 72px;
   height: 72px;
@@ -819,6 +832,47 @@ tbody tr:hover {
   font-size: 0.7rem;
   font-weight: 800;
   text-align: center;
+}
+
+/* QR 스캔 화면 */
+.scan-guide {
+  margin: 0 0 12px;
+}
+
+.scan-stage {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #101b18;
+  aspect-ratio: 4 / 3;
+  margin-bottom: 12px;
+}
+
+#scan-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.scan-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #dfe9e6;
+  font-weight: 700;
+  background: rgba(16, 27, 24, 0.72);
+}
+
+.scan-manual {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.scan-item-card {
+  border-left: 4px solid var(--teal);
 }
 
 .formula {
@@ -955,5 +1009,13 @@ tbody tr:hover {
   .label-card {
     break-inside: avoid;
     box-shadow: none;
+    grid-template-columns: 30mm minmax(0, 1fr);
+  }
+
+  /* 인쇄 시 QR을 약 30mm 고정 크기로 출력해 스캔 선명도를 확보한다. */
+  .label-qr,
+  .fake-qr {
+    width: 30mm;
+    height: 30mm;
   }
 }

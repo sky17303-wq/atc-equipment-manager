@@ -21,7 +21,10 @@ const state = {
   editingMemberId: null,
   editingOrganizationId: null,
   activeReturnApplicationId: null,
-  activeReturnLoanId: null
+  activeReturnLoanId: null,
+  scanStream: null,
+  scanTimer: null,
+  scanDetector: null
 };
 
 const titles = {
@@ -30,6 +33,7 @@ const titles = {
   inventory: "교구 목록",
   calendar: "예약 캘린더",
   operations: "승인/반출/반납",
+  scan: "QR 스캔",
   members: "회원 관리",
   stats: "통계/라벨",
   erd: "DB/ERD 초안"
@@ -140,6 +144,8 @@ async function fetchJson(url, options = {}) {
 }
 
 function switchView(section) {
+  // QR 스캔 화면을 벗어나면 카메라를 정지해 배터리/권한 점유를 줄인다.
+  if (section !== "scan") stopScan();
   qsa(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === section);
   });
@@ -682,15 +688,246 @@ async function retryNotification(notificationId) {
   }
 }
 
+// 라벨용 실제 QR SVG 생성. qrValue는 서버가 만드는 값이지만,
+// 라이브러리 미로드 등 예외 상황에서는 기존 자리 표시자로 폴백한다.
+function labelQrMarkup(label) {
+  if (typeof qrcode === "function") {
+    try {
+      const qr = qrcode(0, "M"); // typeNumber 0 = 데이터 길이에 맞춰 자동 크기
+      qr.addData(label.qrValue);
+      qr.make();
+      const svg = qr.createSvgTag({ cellSize: 3, margin: 2, scalable: true });
+      return `<div class="label-qr" aria-hidden="true">${svg}</div>`;
+    } catch (error) {
+      console.error("QR 생성 실패:", label.qrValue, error);
+    }
+  }
+  return `<div class="fake-qr" aria-hidden="true">${escapeHtml(label.code)}</div>`;
+}
+
 function renderLabels() {
   qs("#label-grid").innerHTML = state.labels.slice(0, 24).map((label) => `
     <div class="label-card">
-      <div class="fake-qr" aria-hidden="true">${escapeHtml(label.code)}</div>
+      ${labelQrMarkup(label)}
       <strong>${escapeHtml(label.text)}</strong>
       <span>${escapeHtml(label.name)}</span>
       <small>${escapeHtml(label.qrValue)}</small>
     </div>
   `).join("");
+}
+
+// ---------------------------------------------------------------------------
+// QR 스캔 (모바일 카메라 + BarcodeDetector, 미지원 시 수동 입력 폴백)
+// ---------------------------------------------------------------------------
+
+// QR 값 파싱 규칙:
+// 1) "atc-equipment:{itemId}:{code}" — buildLabels가 만드는 표준 형식
+// 2) URL 형식 — ?code= / ?item= 쿼리 또는 마지막 경로 조각을 코드로 간주
+// 3) 그 외 — 입력값 전체를 품목 코드/ID로 간주 (수동 입력 대응)
+function parseScanValue(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  if (value.toLowerCase().startsWith("atc-equipment:")) {
+    const parts = value.split(":");
+    return { keys: [parts[1], parts[2]].map((part) => (part || "").trim()).filter(Boolean), raw: value };
+  }
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      const codeParam = url.searchParams.get("code") || url.searchParams.get("item");
+      const lastSegment = url.pathname.split("/").filter(Boolean).pop() || "";
+      return { keys: [codeParam, lastSegment].filter(Boolean), raw: value };
+    } catch {
+      // URL 파싱 실패 시 아래 일반 처리로 넘어간다.
+    }
+  }
+  return { keys: [value], raw: value };
+}
+
+// 품목 ID는 소문자(r01), 코드는 대문자(R01)로 저장되므로 대소문자를 보정해 찾는다.
+function findItemByScan(parsed) {
+  if (!parsed) return null;
+  for (const key of parsed.keys) {
+    const found = state.inventory.find((item) =>
+      item.id === key || item.code === key ||
+      item.id === key.toLowerCase() || item.code === key.toUpperCase());
+    if (found) return found;
+  }
+  return null;
+}
+
+// 해당 품목이 걸린 활성 신청(반출중/검수 대기) 목록
+function activeApplicationsForItem(itemId) {
+  return state.applications.filter((application) =>
+    ["checked_out", "returned"].includes(application.status) &&
+    (application.items || []).some((line) => line.itemId === itemId));
+}
+
+function setScanHint(message, isError = false) {
+  const hint = qs("#scan-hint");
+  if (!hint) return;
+  hint.textContent = message;
+  hint.style.color = isError ? "var(--coral)" : "var(--muted)";
+}
+
+function renderScanResult(item, raw) {
+  const container = qs("#scan-result");
+  if (!container) return;
+  if (!item) {
+    container.className = "result-empty";
+    container.textContent = `등록된 품목을 찾지 못했습니다. 입력값: ${raw}`;
+    return;
+  }
+
+  const effectiveRole = state.session?.user?.role || state.currentRole;
+  const canInspect = ["staff", "admin"].includes(effectiveRole);
+  const occupied = state.reservations
+    .filter((reservation) => reservation.itemId === item.id &&
+      ["tentative", "confirmed", "checked_out"].includes(reservation.status))
+    .reduce((sum, reservation) => sum + reservation.quantity, 0);
+  const actives = activeApplicationsForItem(item.id);
+
+  container.className = "result-stack";
+  container.innerHTML = `
+    <div class="compact-item scan-item-card">
+      <strong>${escapeHtml(item.code)} ${escapeHtml(item.name)}</strong>
+      <small>분류 ${escapeHtml(item.category)} · 단위 ${escapeHtml(item.unit)}</small>
+      <small>총 ${formatNumber.format(item.totalQuantity)}${escapeHtml(item.unit)} · 대여 기준 ${formatNumber.format(item.rentableQuantity)}${escapeHtml(item.unit)} · 제외 ${formatNumber.format(item.unavailableQuantity)}${escapeHtml(item.unit)} · 현재 점유 ${formatNumber.format(occupied)}${escapeHtml(item.unit)}</small>
+      <small>${escapeHtml(item.notes || "비고 없음")}</small>
+      <div class="form-actions">
+        <button class="small-action" type="button" data-scan-inventory="${escapeHtml(item.code)}">재고 보기</button>
+      </div>
+    </div>
+    ${actives.length
+      ? actives.map((application) => `
+        <div class="compact-item">
+          <strong>${escapeHtml(application.organization)} · ${escapeHtml(application.id)}</strong>
+          <small>${application.startDate} ~ ${application.endDate} · ${escapeHtml(applicationItemsText(application))}</small>
+          <div class="form-actions">
+            <span class="status-pill ${statusTone(application.status)}">${applicationStatusLabel(application.status)}</span>
+            ${canInspect
+              ? `<button class="small-action" type="button" data-scan-inspect="${escapeHtml(application.id)}" data-scan-item="${escapeHtml(item.id)}">검수 폼으로</button>`
+              : ""}
+          </div>
+        </div>
+      `).join("")
+      : `<div class="compact-item"><strong>활성 신청 없음</strong><small>이 품목이 걸린 반출중/검수 대기 신청이 없습니다.</small></div>`}
+  `;
+}
+
+function handleScanValue(raw) {
+  const parsed = parseScanValue(raw);
+  if (!parsed) {
+    setScanHint("빈 값은 조회할 수 없습니다. 품목 코드를 입력하세요.", true);
+    return;
+  }
+  const item = findItemByScan(parsed);
+  renderScanResult(item, parsed.raw);
+  setScanHint(item
+    ? `${item.code} ${item.name} 품목을 찾았습니다.`
+    : "품목을 찾지 못했습니다. 코드 표기를 확인해 주세요.", !item);
+}
+
+function stopScan() {
+  if (state.scanTimer) {
+    clearInterval(state.scanTimer);
+    state.scanTimer = null;
+  }
+  if (state.scanStream) {
+    state.scanStream.getTracks().forEach((track) => track.stop());
+    state.scanStream = null;
+  }
+  const video = qs("#scan-video");
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+  }
+  const start = qs("#scan-start");
+  const stop = qs("#scan-stop");
+  const overlay = qs("#scan-overlay");
+  if (start) start.disabled = false;
+  if (stop) stop.disabled = true;
+  if (overlay) overlay.hidden = false;
+}
+
+// 주기(300ms)마다 비디오 프레임에서 QR을 찾는다. 인식 시 진동 + 정지 + 결과 표시.
+async function scanTick() {
+  const video = qs("#scan-video");
+  if (!state.scanDetector || !video || video.readyState < 2) return;
+  try {
+    const codes = await state.scanDetector.detect(video);
+    const value = codes?.[0]?.rawValue;
+    if (!value) return;
+    if (navigator.vibrate) navigator.vibrate(150);
+    stopScan();
+    handleScanValue(value);
+  } catch {
+    // 개별 프레임 인식 실패는 무시하고 다음 주기에 재시도한다.
+  }
+}
+
+function scanErrorMessage(error) {
+  if (error?.name === "NotAllowedError") {
+    return "카메라 권한이 거부되었습니다. 브라우저 설정에서 카메라 권한을 허용한 뒤 다시 시도하세요.";
+  }
+  if (error?.name === "NotFoundError" || error?.name === "OverconstrainedError") {
+    return "사용 가능한 카메라를 찾을 수 없습니다. 아래 수동 코드 입력을 사용하세요.";
+  }
+  if (error?.name === "NotReadableError") {
+    return "카메라를 다른 앱이 사용 중입니다. 다른 앱을 종료한 뒤 다시 시도하세요.";
+  }
+  return `카메라를 시작하지 못했습니다: ${error?.message || error}`;
+}
+
+async function startScan() {
+  if (state.scanStream) return;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    setScanHint("카메라 접근은 HTTPS(또는 localhost)에서만 동작합니다. 아래 수동 코드 입력을 사용하세요.", true);
+    return;
+  }
+  if (!state.scanDetector) {
+    setScanHint("이 브라우저는 QR 자동 인식(BarcodeDetector)을 지원하지 않습니다. iOS Safari 등에서는 아래 수동 코드 입력을 사용하세요.", true);
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    state.scanStream = stream;
+    const video = qs("#scan-video");
+    video.srcObject = stream;
+    await video.play();
+    qs("#scan-start").disabled = true;
+    qs("#scan-stop").disabled = false;
+    qs("#scan-overlay").hidden = true;
+    state.scanTimer = setInterval(scanTick, 300);
+    setScanHint("QR 코드를 카메라 중앙에 맞춰 주세요.");
+  } catch (error) {
+    stopScan();
+    setScanHint(scanErrorMessage(error), true);
+  }
+}
+
+// 페이지 로드 시 BarcodeDetector(qr_code) 지원 여부를 확인해 배지와 안내를 갱신한다.
+async function initScanSupport() {
+  let supported = false;
+  if ("BarcodeDetector" in window) {
+    try {
+      const formats = await window.BarcodeDetector.getSupportedFormats();
+      if (formats.includes("qr_code")) {
+        state.scanDetector = new window.BarcodeDetector({ formats: ["qr_code"] });
+        supported = true;
+      }
+    } catch {
+      supported = false;
+    }
+  }
+  const pill = qs("#scan-support");
+  if (pill) {
+    pill.textContent = supported ? "카메라 스캔 지원" : "수동 입력 모드";
+    pill.classList.toggle("warn", !supported);
+  }
+  if (!supported) {
+    setScanHint("이 브라우저는 QR 자동 인식(BarcodeDetector)을 지원하지 않습니다. 아래 수동 코드 입력을 사용하세요.", true);
+  }
 }
 
 function renderAiResult(result) {
@@ -1157,6 +1394,19 @@ document.addEventListener("click", (event) => {
     retryNotification(notificationRetry.dataset.notificationRetry);
   }
 
+  const scanInspect = event.target.closest("[data-scan-inspect]");
+  if (scanInspect) {
+    const application = state.applications.find((entry) => entry.id === scanInspect.dataset.scanInspect);
+    if (application) prefillReturnFromApplication(application, scanInspect.dataset.scanItem);
+  }
+
+  const scanInventory = event.target.closest("[data-scan-inventory]");
+  if (scanInventory) {
+    qs("#inventory-search").value = scanInventory.dataset.scanInventory;
+    renderInventory();
+    switchView("inventory");
+  }
+
   const inventoryEdit = event.target.closest("[data-inventory-edit]");
   if (inventoryEdit) {
     editInventoryItem(inventoryEdit.dataset.inventoryEdit);
@@ -1199,10 +1449,17 @@ qs("#member-form-clear").addEventListener("click", clearMemberForm);
 qs("#organization-form").addEventListener("submit", submitOrganizationForm);
 qs("#organization-form-clear").addEventListener("click", clearOrganizationForm);
 qs("#print-labels").addEventListener("click", () => window.print());
+qs("#scan-start").addEventListener("click", startScan);
+qs("#scan-stop").addEventListener("click", stopScan);
+qs("#scan-manual-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  handleScanValue(qs("#scan-manual-input").value);
+});
 ["#return-checked-out", "#return-normal", "#return-damaged", "#return-repair", "#return-lost"]
   .forEach((selector) => qs(selector).addEventListener("input", updateReturnHint));
 
 qs("#role-select").value = state.currentRole;
+initScanSupport();
 loadData().catch((error) => {
   document.body.innerHTML = `<main class="main"><section class="panel"><h1>초기화 오류</h1><p>${escapeHtml(error.message)}</p></section></main>`;
 });
