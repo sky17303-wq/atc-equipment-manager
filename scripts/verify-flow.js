@@ -47,6 +47,16 @@ async function postExpectStatus(pathname, role, body, expectedStatus) {
   return payload;
 }
 
+// 실패(4xx)가 기대되는 GET 호출: 기대한 상태 코드가 아니면 오류를 던진다.
+async function getExpectStatus(pathname, role, expectedStatus) {
+  const response = await fetch(`${baseUrl}${pathname}`, { headers: headers(role) });
+  const payload = await response.json();
+  if (response.status !== expectedStatus) {
+    throw new Error(`${pathname} expected ${expectedStatus}, got ${response.status}: ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
 async function putJson(pathname, role, body) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     method: "PUT",
@@ -239,6 +249,26 @@ async function run() {
   await postExpectStatus("/api/notifications/ntf-missing/retry", "staff", {}, 404);
   await postExpectStatus("/api/notifications/ntf-missing/retry", "applicant", {}, 403);
 
+  // --- 기간별 운영 리포트 시나리오 ---
+  // 기본(최근 30일) 호출: totals가 존재하고, 위에서 기록한 검수 파손이 반영돼야 한다.
+  const report = await getJson("/api/reports", "staff");
+  const reportOk = Boolean(
+    report.period?.startDate &&
+    report.period?.endDate &&
+    report.totals &&
+    typeof report.totals.applications === "number" &&
+    Array.isArray(report.topItems) &&
+    Array.isArray(report.categoryUtilization) &&
+    report.damage?.total?.abnormal >= 1 &&
+    report.overdue &&
+    report.repairs
+  );
+  // 잘못된 날짜 형식/역전 기간은 400
+  await getExpectStatus("/api/reports?startDate=2026-13-99", "staff", 400);
+  await getExpectStatus("/api/reports?startDate=2026-07-10&endDate=2026-07-01", "staff", 400);
+  // applicant는 조회 불가(403)
+  await getExpectStatus("/api/reports", "applicant", 403);
+
   const result = {
     health: health.ok,
     aiStatus: ai.status,
@@ -269,7 +299,9 @@ async function run() {
       r06After.unavailableQuantity === r06Before.unavailableQuantity,
     rejectedForNotification: notificationData.notifications.some((entry) =>
       entry.type === "application.rejected" && entry.relatedId === rejectId),
-    notificationsOk
+    notificationsOk,
+    reportOk,
+    reportDamageAbnormal: report.damage?.total?.abnormal
   };
 
   console.log(JSON.stringify(result, null, 2));
@@ -301,7 +333,8 @@ async function run() {
     result.repairResolved === "resolved" &&
     result.repairInventoryRestored &&
     result.rejectedForNotification &&
-    result.notificationsOk;
+    result.notificationsOk &&
+    result.reportOk;
 
   if (!passed) throw new Error("verification failed");
 }

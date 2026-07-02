@@ -278,7 +278,12 @@
               </div>
               <form id="csv-form" class="csv-form">
                 <label>
-                  CSV 내용
+                  엑셀/CSV 파일 선택 (.xlsx, .xls, .csv)
+                  <input id="excel-file" type="file" accept=".xlsx,.xls,.csv">
+                </label>
+                <p id="excel-hint" class="hint-text">엑셀 파일을 선택하면 첫 시트를 읽어 아래 미리보기에 CSV로 변환해 채웁니다. 한국어 헤더(코드/품목명/분류/총수량/제외/대여 기준/단위/추적 방식/비고)는 자동 매핑됩니다.</p>
+                <label>
+                  CSV 미리보기/직접 입력
                   <textarea id="csv-input" rows="8">code,name,category,totalQuantity,unavailableQuantity,rentableQuantity,unit,unitType,notes
 R99,테스트 교구,로봇,10,0,10,대,serialized,일괄 업로드 예시</textarea>
                 </label>
@@ -553,6 +558,25 @@ R99,테스트 교구,로봇,10,0,10,대,serialized,일괄 업로드 예시</text
         </section>
 
         <section id="stats" class="view">
+          <section class="panel" id="report-panel" hidden>
+            <div class="panel-header wrap">
+              <h3>기간별 리포트</h3>
+              <form id="report-form" class="report-controls">
+                <label>
+                  시작일
+                  <input id="report-start-date" type="date">
+                </label>
+                <label>
+                  종료일
+                  <input id="report-end-date" type="date">
+                </label>
+                <button class="small-action" type="submit">조회</button>
+              </form>
+            </div>
+            <p id="report-hint" class="hint-text">기간을 선택하고 조회를 누르면 사용률/파손율/연체 현황을 집계합니다. (기본: 최근 30일)</p>
+            <div id="report-result" class="report-result"></div>
+          </section>
+
           <div class="content-grid">
             <section class="panel">
               <div class="panel-header">

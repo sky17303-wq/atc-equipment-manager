@@ -24,7 +24,8 @@ const state = {
   activeReturnLoanId: null,
   scanStream: null,
   scanTimer: null,
-  scanDetector: null
+  scanDetector: null,
+  reportLoaded: false
 };
 
 const titles = {
@@ -146,6 +147,16 @@ async function fetchJson(url, options = {}) {
 function switchView(section) {
   // QR 스캔 화면을 벗어나면 카메라를 정지해 배터리/권한 점유를 줄인다.
   if (section !== "scan") stopScan();
+  // 교구 목록 첫 진입 시에만 엑셀 파서(SheetJS)를 미리 로드한다 (초기 로딩 무게 방지).
+  if (section === "inventory") ensureXlsxLoaded().catch(() => {});
+  // 통계 화면 첫 진입 시 기본 기간(최근 30일) 리포트를 자동 조회한다.
+  if (section === "stats" && !state.reportLoaded) {
+    const panel = qs("#report-panel");
+    if (panel && !panel.hidden) {
+      state.reportLoaded = true;
+      loadReport().catch(() => {});
+    }
+  }
   qsa(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === section);
   });
@@ -644,6 +655,136 @@ function renderStats() {
       <small>품목 ${formatNumber.format(category.itemCount)} · 총 ${formatNumber.format(category.totalQuantity)} · 대여 기준 ${formatNumber.format(category.rentableQuantity)} · 제외 ${formatNumber.format(category.unavailableQuantity)}</small>
     </div>
   `).join("");
+}
+
+// ---------------------------------------------------------------------------
+// 기간별 운영 리포트 (사용률/파손율/연체율) — staff/admin/auditor 전용
+// ---------------------------------------------------------------------------
+
+function formatPercent(rate) {
+  return `${(Number(rate || 0) * 100).toFixed(1)}%`;
+}
+
+function formatDateInput(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+// 기본 조회 기간: 최근 30일 (오늘 포함)
+function setDefaultReportRange() {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 29);
+  qs("#report-start-date").value = formatDateInput(start);
+  qs("#report-end-date").value = formatDateInput(end);
+}
+
+// applicant에게는 리포트 패널을 숨긴다 (수리 티켓/알림 패널과 같은 role 처리 패턴).
+function updateReportPanelVisibility() {
+  const panel = qs("#report-panel");
+  if (!panel) return;
+  const effectiveRole = state.session?.user?.role || state.currentRole;
+  panel.hidden = !["staff", "admin", "auditor"].includes(effectiveRole);
+}
+
+function renderReport(report) {
+  const container = qs("#report-result");
+  if (!container) return;
+  const totals = report.totals;
+  const statusLine = Object.entries(totals.applicationsByStatus || {})
+    .map(([status, count]) => `${applicationStatusLabel(status)} ${formatNumber.format(count)}`)
+    .join(" · ") || "기간 내 신청 없음";
+
+  const metricCards = [
+    ["기간 내 신청", formatNumber.format(totals.applications)],
+    ["반출 건수", formatNumber.format(totals.checkouts)],
+    ["반납 검수", formatNumber.format(totals.inspections)],
+    ["파손/분실율", formatPercent(report.damage.total.rate)],
+    ["기한 초과 반납", formatNumber.format(report.overdue.returnedLate)],
+    ["미반납 연체", formatNumber.format(report.overdue.unreturned)],
+    ["수리 접수/해결", `${formatNumber.format(report.repairs.created)} / ${formatNumber.format(report.repairs.resolved)}`],
+    ["미해결 수리", formatNumber.format(report.repairs.open)]
+  ].map(([label, value]) => `
+    <div class="metric-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+    </div>
+  `).join("");
+
+  const topItems = report.topItems.length
+    ? report.topItems.map((entry, index) => `
+      <div class="compact-item">
+        <strong>${index + 1}. ${escapeHtml(entry.code)} ${escapeHtml(entry.name)}</strong>
+        <small>대여 ${formatNumber.format(entry.rentalCount)}회 · ${formatNumber.format(entry.rentalQuantity)}${escapeHtml(entry.unit)} · 점유 ${formatNumber.format(entry.occupiedDayQuantity)}개·일 · 사용률 ${formatPercent(entry.utilizationRate)}</small>
+      </div>
+    `).join("")
+    : `<div class="compact-item"><strong>대여 활동 없음</strong><small>기간 내 대여 품목이 없습니다.</small></div>`;
+
+  const categories = report.categoryUtilization
+    .filter((entry) => entry.itemCount > 0)
+    .map((entry) => `
+      <div class="compact-item">
+        <strong>${escapeHtml(entry.category)} · 사용률 ${formatPercent(entry.utilizationRate)}</strong>
+        <small>점유 ${formatNumber.format(entry.occupiedDayQuantity)}개·일 / 용량 ${formatNumber.format(entry.capacityDayQuantity)}개·일 (대여 기준 × ${formatNumber.format(report.period.days)}일)</small>
+      </div>
+    `).join("");
+
+  const damageItems = report.damage.byItem.length
+    ? report.damage.byItem.map((entry) => `
+      <div class="compact-item">
+        <strong>${escapeHtml(entry.code)} ${escapeHtml(entry.name)} · ${formatPercent(entry.rate)}</strong>
+        <small>반출 ${formatNumber.format(entry.checkedOut)} 중 파손/수리/분실 ${formatNumber.format(entry.abnormal)}</small>
+      </div>
+    `).join("")
+    : `<div class="compact-item"><strong>검수 이력 없음</strong><small>기간 내 반납 검수 기록이 없습니다.</small></div>`;
+
+  const overdueList = report.overdue.current.length
+    ? report.overdue.current.map((entry) => `
+      <div class="compact-item">
+        <strong>${escapeHtml(entry.organization)} · ${escapeHtml(entry.applicationId || entry.loanId)}</strong>
+        <small>반납 기한 ${escapeHtml(String(entry.dueAt).slice(0, 10))} · <span class="status-pill bad">경과 ${formatNumber.format(entry.overdueDays)}일</span></small>
+      </div>
+    `).join("")
+    : `<div class="compact-item"><strong>연체 없음</strong><small>현재 연체 중인 반출이 없습니다.</small></div>`;
+
+  container.innerHTML = `
+    <div class="stats-grid">${metricCards}</div>
+    <div class="compact-item">
+      <strong>신청 상태별</strong>
+      <small>${escapeHtml(statusLine)}</small>
+    </div>
+    <h4 class="report-section-title">품목별 대여 Top ${report.topItems.length || 10}</h4>
+    <div class="compact-list">${topItems}</div>
+    <h4 class="report-section-title">카테고리별 사용률</h4>
+    <div class="compact-list">${categories}</div>
+    <h4 class="report-section-title">품목별 파손/분실율</h4>
+    <div class="compact-list">${damageItems}</div>
+    <h4 class="report-section-title">현재 연체 중</h4>
+    <div class="compact-list">${overdueList}</div>
+  `;
+}
+
+async function loadReport(event) {
+  event?.preventDefault();
+  const hint = qs("#report-hint");
+  const startDate = qs("#report-start-date").value;
+  const endDate = qs("#report-end-date").value;
+  if (startDate && endDate && startDate > endDate) {
+    hint.textContent = "시작일이 종료일보다 늦을 수 없습니다.";
+    hint.style.color = "var(--coral)";
+    return;
+  }
+  try {
+    const params = new URLSearchParams();
+    if (startDate) params.set("startDate", startDate);
+    if (endDate) params.set("endDate", endDate);
+    const report = await fetchJson(`/api/reports?${params.toString()}`);
+    renderReport(report);
+    hint.textContent = `${report.period.startDate} ~ ${report.period.endDate} (${formatNumber.format(report.period.days)}일) 기준 집계입니다.`;
+    hint.style.color = "var(--muted)";
+  } catch (error) {
+    hint.textContent = error.message;
+    hint.style.color = "var(--coral)";
+  }
 }
 
 function notificationStatusTone(status) {
@@ -1267,6 +1408,153 @@ async function submitInventoryForm(event) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 엑셀(.xlsx/.xls) 업로드 → CSV 미리보기 변환 (SheetJS는 필요 시점에 동적 로드)
+// ---------------------------------------------------------------------------
+
+// CSV import가 인식하는 시스템 필드 키 (영문 헤더는 그대로 허용)
+const IMPORT_FIELD_KEYS = [
+  "code", "name", "category", "totalQuantity", "unavailableQuantity",
+  "rentableQuantity", "unit", "unitType", "notes"
+];
+
+// 한국어 헤더 → 시스템 필드 자동 매핑 (공백 제거 후 비교)
+const IMPORT_HEADER_ALIASES = {
+  "코드": "code",
+  "품목코드": "code",
+  "품목명": "name",
+  "품명": "name",
+  "분류": "category",
+  "카테고리": "category",
+  "총수량": "totalQuantity",
+  "보유수량": "totalQuantity",
+  "제외": "unavailableQuantity",
+  "대여제외": "unavailableQuantity",
+  "제외수량": "unavailableQuantity",
+  "대여기준": "rentableQuantity",
+  "대여가능": "rentableQuantity",
+  "대여가능수량": "rentableQuantity",
+  "단위": "unit",
+  "추적방식": "unitType",
+  "비고": "notes",
+  "메모": "notes"
+};
+
+// 헤더 문자열 → 필드 키 (매핑 실패 시 null)
+function mapImportHeader(header) {
+  const text = String(header ?? "").trim();
+  if (!text) return null;
+  const exact = IMPORT_FIELD_KEYS.find((key) => key.toLowerCase() === text.toLowerCase());
+  if (exact) return exact;
+  return IMPORT_HEADER_ALIASES[text.replace(/\s+/g, "")] || null;
+}
+
+function csvEscape(value) {
+  const text = String(value ?? "");
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+let xlsxLoadPromise = null;
+
+// SheetJS를 교구 목록 화면 첫 진입 시점에만 로드해 초기 로딩을 가볍게 유지한다.
+function ensureXlsxLoaded() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (!xlsxLoadPromise) {
+    xlsxLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "vendor/xlsx.full.min.js";
+      script.onload = () => resolve(window.XLSX);
+      script.onerror = () => {
+        xlsxLoadPromise = null;
+        script.remove();
+        reject(new Error("엑셀 파서(xlsx) 스크립트를 불러오지 못했습니다."));
+      };
+      document.head.appendChild(script);
+    });
+  }
+  return xlsxLoadPromise;
+}
+
+function setExcelHint(message, isError = false) {
+  const hint = qs("#excel-hint");
+  if (!hint) return;
+  hint.textContent = message;
+  hint.style.color = isError ? "var(--coral)" : "var(--muted)";
+}
+
+// 시트 데이터(행 배열)를 CSV 텍스트로 변환. 매핑 실패 컬럼은 무시하고 목록으로 알려준다.
+function sheetRowsToCsv(rows) {
+  const headerIndex = rows.findIndex((row) => (row || []).some((cell) => String(cell ?? "").trim()));
+  if (headerIndex < 0) throw new Error("시트에 데이터가 없습니다.");
+
+  const rawHeaders = rows[headerIndex].map((cell) => String(cell ?? "").trim());
+  const seen = new Set();
+  const ignored = [];
+  // 각 컬럼 위치 → 필드 키 (같은 필드로 중복 매핑되면 첫 컬럼만 사용)
+  const columnFields = rawHeaders.map((header) => {
+    const field = mapImportHeader(header);
+    if (!field) {
+      if (header) ignored.push(header);
+      return null;
+    }
+    if (seen.has(field)) {
+      ignored.push(`${header}(중복)`);
+      return null;
+    }
+    seen.add(field);
+    return field;
+  });
+
+  if (!seen.has("code") || !seen.has("name")) {
+    throw new Error("코드/품목명 컬럼을 찾지 못했습니다. 헤더에 '코드'와 '품목명'(또는 code, name)이 필요합니다.");
+  }
+
+  const fields = columnFields.filter(Boolean);
+  const lines = [fields.join(",")];
+  for (const row of rows.slice(headerIndex + 1)) {
+    const cells = row || [];
+    if (!cells.some((cell) => String(cell ?? "").trim())) continue;
+    const values = [];
+    columnFields.forEach((field, index) => {
+      if (field) values.push(csvEscape(String(cells[index] ?? "").trim()));
+    });
+    lines.push(values.join(","));
+  }
+  if (lines.length < 2) throw new Error("헤더 아래에 반영할 데이터 행이 없습니다.");
+  return { csv: lines.join("\n"), rowCount: lines.length - 1, ignored };
+}
+
+// 파일 선택 시: xlsx/xls → SheetJS 파싱 후 CSV 변환, csv → 텍스트 그대로 미리보기에 채운다.
+async function handleExcelFile(event) {
+  const input = event.target;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    if (/\.csv$/i.test(file.name)) {
+      qs("#csv-input").value = await file.text();
+      setExcelHint(`${file.name} 내용을 미리보기에 채웠습니다. 확인 후 "일괄 반영"을 누르세요.`);
+      return;
+    }
+    setExcelHint(`${file.name} 파일을 읽는 중입니다.`);
+    const XLSX = await ensureXlsxLoaded();
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) throw new Error("시트를 찾을 수 없습니다.");
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: "" });
+    const { csv, rowCount, ignored } = sheetRowsToCsv(rows);
+    qs("#csv-input").value = csv;
+    setExcelHint([
+      `${file.name} (시트: ${sheetName}) → ${formatNumber.format(rowCount)}행을 변환했습니다.`,
+      ignored.length ? `매핑되지 않아 무시한 컬럼: ${ignored.join(", ")}.` : "",
+      `미리보기 확인 후 "일괄 반영"을 누르세요.`
+    ].filter(Boolean).join(" "));
+  } catch (error) {
+    setExcelHint(`파일 처리 실패: ${error.message}`, true);
+  } finally {
+    input.value = ""; // 같은 파일을 다시 선택해도 change 이벤트가 오도록 초기화
+  }
+}
+
 async function submitCsv(event) {
   event.preventDefault();
   try {
@@ -1300,6 +1588,7 @@ function renderAll() {
   renderReturnInspections();
   renderRepairTickets();
   renderStats();
+  updateReportPanelVisibility();
   renderNotifications();
   renderLabels();
   updateReturnHint();
@@ -1426,6 +1715,10 @@ document.addEventListener("click", (event) => {
 qs("#role-select").addEventListener("change", async (event) => {
   state.currentRole = event.target.value;
   localStorage.setItem("equipmentRole", state.currentRole);
+  // 권한이 바뀌면 리포트를 다시 조회하도록 초기화한다 (applicant는 패널 자체가 숨겨짐).
+  state.reportLoaded = false;
+  const reportResult = qs("#report-result");
+  if (reportResult) reportResult.innerHTML = "";
   await loadData();
 });
 qs("#inventory-search").addEventListener("input", renderInventory);
@@ -1444,6 +1737,8 @@ qs("#return-form").addEventListener("submit", submitReturnInspection);
 qs("#inventory-form").addEventListener("submit", submitInventoryForm);
 qs("#inventory-form-clear").addEventListener("click", clearInventoryForm);
 qs("#csv-form").addEventListener("submit", submitCsv);
+qs("#excel-file").addEventListener("change", handleExcelFile);
+qs("#report-form").addEventListener("submit", loadReport);
 qs("#member-form").addEventListener("submit", submitMemberForm);
 qs("#member-form-clear").addEventListener("click", clearMemberForm);
 qs("#organization-form").addEventListener("submit", submitOrganizationForm);
@@ -1459,6 +1754,7 @@ qs("#scan-manual-form").addEventListener("submit", (event) => {
   .forEach((selector) => qs(selector).addEventListener("input", updateReturnHint));
 
 qs("#role-select").value = state.currentRole;
+setDefaultReportRange();
 initScanSupport();
 loadData().catch((error) => {
   document.body.innerHTML = `<main class="main"><section class="panel"><h1>초기화 오류</h1><p>${escapeHtml(error.message)}</p></section></main>`;

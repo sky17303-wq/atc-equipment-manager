@@ -774,6 +774,37 @@ tbody tr:hover {
   margin-top: 12px;
 }
 
+/* 기간별 리포트 조회 컨트롤 (시작일/종료일/조회) */
+.report-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.report-controls label {
+  gap: 4px;
+  font-size: 0.82rem;
+}
+
+.report-result {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.report-section-title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+@media (max-width: 720px) {
+  .report-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .label-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
