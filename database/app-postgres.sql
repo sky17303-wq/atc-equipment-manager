@@ -163,6 +163,28 @@ CREATE TABLE IF NOT EXISTS repair_tickets (
   CONSTRAINT repair_ticket_returned_within_quantity CHECK (returned_to_rentable <= quantity)
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id text PRIMARY KEY,
+  type text NOT NULL,
+  channel text NOT NULL DEFAULT 'email'
+    CHECK (channel IN ('email', 'kakao')),
+  recipient text NOT NULL,
+  subject text NOT NULL DEFAULT '',
+  body text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
+  related_id text,
+  dedupe_key text,
+  attempts int NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  sent_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS notifications_pending_idx
+  ON notifications (status, channel, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS runtime_events (
   id text PRIMARY KEY,
   type text NOT NULL,

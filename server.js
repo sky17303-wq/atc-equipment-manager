@@ -8,6 +8,7 @@ const { localParse, buildAiResponse } = require("./lib/ai-parser");
 const { parseInventoryCsv } = require("./lib/utils");
 const { handleApi } = require("./lib/api");
 const { serveStatic } = require("./lib/static");
+const { startNotificationDispatcher } = require("./lib/notifications");
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -32,6 +33,8 @@ const server = http.createServer(async (req, res) => {
 if (require.main === module) {
   server.listen(PORT, HOST || undefined, () => {
     console.log(`ATC equipment manager running at http://${HOST || "localhost"}:${PORT}`);
+    // 알림 큐 주기 발송(+반납 기한 스윕) 시작. 타이머는 unref되어 종료를 막지 않는다.
+    startNotificationDispatcher();
   });
 }
 

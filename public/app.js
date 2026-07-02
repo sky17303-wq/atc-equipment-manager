@@ -11,6 +11,7 @@ const state = {
   memberSummary: null,
   labels: [],
   stats: null,
+  notifications: [],
   currentCategory: "전체",
   currentMemberStatus: "전체",
   currentDraft: null,
@@ -59,6 +60,28 @@ const repairIssueLabels = {
   damaged: "파손",
   repair: "수리",
   mixed: "파손+수리"
+};
+
+const notificationStatusLabels = {
+  pending: "대기",
+  sent: "발송됨",
+  failed: "실패",
+  skipped: "건너뜀"
+};
+
+const notificationTypeLabels = {
+  "application.approved": "승인 안내",
+  "application.rejected": "반려 안내",
+  "application.checked_out": "반출 안내",
+  "application.returned": "반납 접수",
+  "application.closed": "검수 완료",
+  "application.due_soon": "반납 임박",
+  "application.overdue": "반납 연체"
+};
+
+const notificationChannelLabels = {
+  email: "이메일",
+  kakao: "알림톡"
 };
 
 const organizationTypeLabels = {
@@ -617,6 +640,48 @@ function renderStats() {
   `).join("");
 }
 
+function notificationStatusTone(status) {
+  if (status === "failed") return "bad";
+  if (["pending", "skipped"].includes(status)) return "warn";
+  return "neutral";
+}
+
+// 알림 발송 이력 패널: 최근 알림 목록 + failed/skipped 재시도 버튼(staff/admin)
+function renderNotifications() {
+  const container = qs("#notification-list");
+  if (!container) return;
+  const effectiveRole = state.session?.user?.role || state.currentRole;
+  const canRetry = ["staff", "admin"].includes(effectiveRole);
+  const list = state.notifications.slice(0, 20);
+  container.innerHTML = list.length
+    ? list.map((notification) => `
+      <div class="compact-item">
+        <strong>${escapeHtml(notificationTypeLabels[notification.type] || notification.type)} · ${escapeHtml(notificationChannelLabels[notification.channel] || notification.channel)}</strong>
+        <small>${escapeHtml(notification.recipient)} · ${escapeHtml(notification.subject || "제목 없음")}</small>
+        <small>${escapeHtml((notification.createdAt || "").replace("T", " ").slice(0, 16))}${notification.error ? ` · ${escapeHtml(notification.error)}` : ""}</small>
+        <div class="form-actions">
+          <span class="status-pill ${notificationStatusTone(notification.status)}">${escapeHtml(notificationStatusLabels[notification.status] || notification.status)}</span>
+          ${canRetry && ["failed", "skipped"].includes(notification.status)
+            ? `<button class="small-action" type="button" data-notification-retry="${escapeHtml(notification.id)}">재시도</button>`
+            : ""}
+        </div>
+      </div>
+    `).join("")
+    : `<div class="compact-item"><strong>알림 없음</strong><small>승인/반출/반납 등 상태 전이 시 알림이 큐에 쌓입니다.</small></div>`;
+}
+
+async function retryNotification(notificationId) {
+  try {
+    await fetchJson(`/api/notifications/${encodeURIComponent(notificationId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    await loadData();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
 function renderLabels() {
   qs("#label-grid").innerHTML = state.labels.slice(0, 24).map((label) => `
     <div class="label-card">
@@ -998,6 +1063,7 @@ function renderAll() {
   renderReturnInspections();
   renderRepairTickets();
   renderStats();
+  renderNotifications();
   renderLabels();
   updateReturnHint();
 }
@@ -1024,14 +1090,19 @@ async function loadData() {
   const repairRequest = effectiveRole === "applicant"
     ? Promise.resolve({ repairTickets: [] })
     : fetchJson("/api/repairs");
-  const [inventoryData, applicationData, returnData, repairData, memberData, statsData, labelData] = await Promise.all([
+  // 알림 발송 이력도 staff/admin/auditor만 조회 가능
+  const notificationRequest = effectiveRole === "applicant"
+    ? Promise.resolve({ notifications: [] })
+    : fetchJson("/api/notifications");
+  const [inventoryData, applicationData, returnData, repairData, memberData, statsData, labelData, notificationData] = await Promise.all([
     fetchJson("/api/inventory"),
     fetchJson("/api/applications"),
     fetchJson("/api/returns"),
     repairRequest,
     memberRequest,
     fetchJson("/api/stats"),
-    fetchJson("/api/labels?limit=80")
+    fetchJson("/api/labels?limit=80"),
+    notificationRequest
   ]);
 
   state.inventory = inventoryData.inventory;
@@ -1046,6 +1117,7 @@ async function loadData() {
   state.memberSummary = memberData.summary || null;
   state.stats = statsData;
   state.labels = labelData.labels;
+  state.notifications = notificationData.notifications || [];
 
   renderAll();
 }
@@ -1078,6 +1150,11 @@ document.addEventListener("click", (event) => {
   const repairAction = event.target.closest("[data-repair-action]");
   if (repairAction) {
     handleRepairAction(repairAction.dataset.repairAction, repairAction.dataset.repairId);
+  }
+
+  const notificationRetry = event.target.closest("[data-notification-retry]");
+  if (notificationRetry) {
+    retryNotification(notificationRetry.dataset.notificationRetry);
   }
 
   const inventoryEdit = event.target.closest("[data-inventory-edit]");

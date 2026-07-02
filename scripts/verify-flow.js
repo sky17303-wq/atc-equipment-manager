@@ -205,6 +205,40 @@ async function run() {
   const inventoryAfter = await getJson("/api/inventory", "staff");
   const r06After = inventoryAfter.inventory.find((item) => item.id === "r06");
 
+  // --- 알림 큐 시나리오 ---
+  // 반려 알림용 신청을 하나 더 만들어 반려한다.
+  const rejectTarget = await postJson("/api/applications", "applicant", {
+    draft: {
+      organization: "테스트초등학교",
+      applicant: "박교사",
+      purpose: "알림 검증용 신청",
+      startDate: "2026-08-03",
+      endDate: "2026-08-04",
+      items: [{ itemId: "r01", quantity: 1 }]
+    }
+  });
+  const rejectId = rejectTarget.application.id;
+  await postJson(`/api/applications/${encodeURIComponent(rejectId)}/reject`, "staff", { memo: "알림 검증용 반려" });
+
+  // 상태 전이별 알림이 큐에 생성됐는지 확인한다.
+  // 디스패처 주기 전이라 status는 pending(또는 발송 시도 후 skipped)일 수 있어 존재 여부만 본다.
+  const notificationData = await getJson("/api/notifications", "staff");
+  const findNotification = (type, relatedId) => notificationData.notifications.find((entry) =>
+    entry.type === type && entry.relatedId === relatedId && entry.channel === "email" &&
+    ["pending", "sent", "failed", "skipped"].includes(entry.status)
+  );
+  const notificationsOk = Boolean(
+    findNotification("application.approved", applicationId) &&
+    findNotification("application.checked_out", applicationId) &&
+    findNotification("application.returned", applicationId) &&
+    findNotification("application.closed", multiId) &&
+    findNotification("application.rejected", rejectId)
+  );
+
+  // 재시도 엔드포인트: 없는 알림은 404, applicant 권한은 403
+  await postExpectStatus("/api/notifications/ntf-missing/retry", "staff", {}, 404);
+  await postExpectStatus("/api/notifications/ntf-missing/retry", "applicant", {}, 403);
+
   const result = {
     health: health.ok,
     aiStatus: ai.status,
@@ -232,7 +266,10 @@ async function run() {
     repairResolved: resolved.repairTicket.status,
     repairInventoryRestored:
       r06After.rentableQuantity === r06Before.rentableQuantity &&
-      r06After.unavailableQuantity === r06Before.unavailableQuantity
+      r06After.unavailableQuantity === r06Before.unavailableQuantity,
+    rejectedForNotification: notificationData.notifications.some((entry) =>
+      entry.type === "application.rejected" && entry.relatedId === rejectId),
+    notificationsOk
   };
 
   console.log(JSON.stringify(result, null, 2));
@@ -262,7 +299,9 @@ async function run() {
     result.repairTicketQuantity === 1 &&
     result.repairInRepair === "in_repair" &&
     result.repairResolved === "resolved" &&
-    result.repairInventoryRestored;
+    result.repairInventoryRestored &&
+    result.rejectedForNotification &&
+    result.notificationsOk;
 
   if (!passed) throw new Error("verification failed");
 }
