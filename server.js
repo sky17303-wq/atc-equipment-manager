@@ -2,7 +2,7 @@ const http = require("node:http");
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHmac, randomUUID, timingSafeEqual } = require("node:crypto");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -21,6 +21,8 @@ const AUTH_MODE = String(process.env.AUTH_MODE || process.env.EQUIPMENT_AUTH_MOD
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const ERP_LOGIN_URL = process.env.ERP_LOGIN_URL || "/erp/login?from=/equipment/";
+const ERP_SESSION_COOKIE = process.env.ERP_SESSION_COOKIE || "erp_session";
+const ERP_SESSION_SECRET = process.env.ERP_SESSION_SECRET || process.env.NEXTAUTH_SECRET || process.env.AUTH_SECRET || "";
 
 let seedCache = null;
 let pgPool = null;
@@ -1097,6 +1099,52 @@ function getSupabaseAccessToken(req) {
   return null;
 }
 
+function base64UrlEncode(input) {
+  return Buffer.from(input)
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function decodeBase64UrlJson(value) {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+}
+
+function verifySignedToken(token, secret) {
+  if (!token || !secret || !String(token).includes(".")) return null;
+  const parts = String(token).split(".");
+  if (parts.length !== 2) return null;
+  const [body, signature] = parts;
+  const expected = base64UrlEncode(createHmac("sha256", secret).update(body).digest());
+  const signatureBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (signatureBuffer.length !== expectedBuffer.length) return null;
+  if (!timingSafeEqual(signatureBuffer, expectedBuffer)) return null;
+
+  try {
+    return decodeBase64UrlJson(body);
+  } catch {
+    return null;
+  }
+}
+
+function erpSessionAuthEnabled() {
+  return (authMode() === "supabase" || authMode() === "hybrid") && Boolean(ERP_SESSION_SECRET);
+}
+
+function getErpSession(req) {
+  if (!erpSessionAuthEnabled()) return null;
+  const cookies = parseCookieHeader(req.headers.cookie || "");
+  const token = cookies.get(ERP_SESSION_COOKIE);
+  const session = verifySignedToken(token, ERP_SESSION_SECRET);
+  if (!session?.user?.id || !session.user.email) return null;
+  if (session.expires_at <= Math.floor(Date.now() / 1000)) return null;
+  return session;
+}
+
 async function fetchSupabaseUser(accessToken) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !accessToken) return null;
   const response = await fetch(`${SUPABASE_URL.replace(/\/$/, "")}/auth/v1/user`, {
@@ -1287,8 +1335,59 @@ async function resolveSupabaseActor(req, seed, runtime) {
   return actorFromMember(nextMember, "supabase");
 }
 
+async function resolveErpSessionActor(req, seed, runtime) {
+  const session = getErpSession(req);
+  const user = session?.user;
+  const email = normalizeEmail(user?.email);
+  if (!user?.id || !isSsemEmail(email)) return null;
+
+  const existing = findMemberForSupabaseUser(seed, user);
+  const displayName = cleanText(
+    user.user_metadata?.name ||
+      user.user_metadata?.full_name ||
+      user.user_metadata?.preferred_username ||
+      existing?.name,
+    email.split("@")[0]
+  );
+  const nextMember = normalizeMemberPayload(
+    {
+      id: existing?.id || `member-erp-${String(user.id).slice(0, 18).replace(/[^A-Za-z0-9_-]/g, "")}`,
+      erpUserId: user.id,
+      email,
+      name: displayName,
+      role: existing?.role || "applicant",
+      status: existing?.status || AUTO_MEMBER_STATUS,
+      organizationId: existing?.organizationId || "org-association",
+      organization: existing?.organization || "",
+      phone: existing?.phone || "",
+      memo: existing?.memo || "ERP session login auto linked",
+      lastLoginAt: new Date().toISOString()
+    },
+    existing || {},
+    seed.organizations || []
+  );
+
+  if (memberNeedsLoginSync(existing, nextMember)) {
+    upsertRuntimeEntry(runtime.members, nextMember);
+    addRuntimeEvent(runtime, existing ? "member.login_synced" : "member.auto_created", {
+      name: "ERP session login",
+      role: "system"
+    }, {
+      memberId: nextMember.id,
+      email: nextMember.email,
+      status: nextMember.status
+    });
+    await saveRuntimeState(runtime);
+  }
+
+  return actorFromMember(nextMember, "erp_session");
+}
+
 async function getActor(req, seed, runtime) {
-  const erpActor = await resolveSupabaseActor(req, seed, runtime);
+  const supabaseActor = await resolveSupabaseActor(req, seed, runtime);
+  if (supabaseActor) return supabaseActor;
+
+  const erpActor = await resolveErpSessionActor(req, seed, runtime);
   if (erpActor) return erpActor;
 
   if (mockAuthAllowed()) {
@@ -1974,6 +2073,7 @@ async function handleApi(req, res, url) {
       storageMode: postgresEnabled() ? "postgres" : "runtime-json",
       authMode: authMode(),
       supabaseAuthConfigured: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY),
+      erpSessionAuthConfigured: Boolean(ERP_SESSION_SECRET),
       erpPermissionSyncConfigured: erpPermissionSyncEnabled(),
       currentUser: actor
     });
