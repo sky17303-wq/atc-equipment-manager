@@ -144,6 +144,25 @@ CREATE TABLE IF NOT EXISTS return_inspections (
   )
 );
 
+CREATE TABLE IF NOT EXISTS repair_tickets (
+  id text PRIMARY KEY,
+  inspection_id text REFERENCES return_inspections(id) ON DELETE SET NULL,
+  application_id text REFERENCES rental_applications(id) ON DELETE SET NULL,
+  item_id text NOT NULL REFERENCES equipment_items(id),
+  quantity int NOT NULL CHECK (quantity > 0),
+  issue_type text NOT NULL DEFAULT 'damaged'
+    CHECK (issue_type IN ('damaged', 'repair', 'mixed')),
+  status text NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open', 'in_repair', 'resolved', 'scrapped')),
+  returned_to_rentable int NOT NULL DEFAULT 0 CHECK (returned_to_rentable >= 0),
+  note text NOT NULL DEFAULT '',
+  created_by text NOT NULL DEFAULT '운영담당자',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  resolved_at timestamptz,
+  CONSTRAINT repair_ticket_returned_within_quantity CHECK (returned_to_rentable <= quantity)
+);
+
 CREATE TABLE IF NOT EXISTS runtime_events (
   id text PRIMARY KEY,
   type text NOT NULL,

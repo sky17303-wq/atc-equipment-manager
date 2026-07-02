@@ -5,6 +5,7 @@ const state = {
   applications: [],
   loans: [],
   returnInspections: [],
+  repairTickets: [],
   members: [],
   organizations: [],
   memberSummary: null,
@@ -45,6 +46,19 @@ const memberStatusLabels = {
   pending: "승인대기",
   suspended: "정지",
   archived: "보관"
+};
+
+const repairStatusLabels = {
+  open: "접수",
+  in_repair: "수리중",
+  resolved: "복귀완료",
+  scrapped: "폐기"
+};
+
+const repairIssueLabels = {
+  damaged: "파손",
+  repair: "수리",
+  mixed: "파손+수리"
 };
 
 const organizationTypeLabels = {
@@ -228,16 +242,31 @@ function renderIssueList() {
     inspectionIssues.set(inspection.itemId, (inspectionIssues.get(inspection.itemId) || 0) + abnormal);
   }
 
+  // 미해결(open/in_repair) 수리 티켓 수를 재고 이슈에 반영한다.
+  const openRepairByItem = new Map();
+  let openRepairCount = 0;
+  for (const ticket of state.repairTickets) {
+    if (!["open", "in_repair"].includes(ticket.status)) continue;
+    openRepairCount += 1;
+    openRepairByItem.set(ticket.itemId, (openRepairByItem.get(ticket.itemId) || 0) + 1);
+  }
+
   const issues = state.inventory
-    .filter((item) => item.unavailableQuantity > 0 || inspectionIssues.has(item.id) || item.notes.includes("세트화"))
+    .filter((item) => item.unavailableQuantity > 0 || inspectionIssues.has(item.id) || openRepairByItem.has(item.id) || item.notes.includes("세트화"))
     .slice(0, 5);
-  qs("#issue-list").innerHTML = issues.length
-    ? issues.map((item) => `
+  const repairSummary = openRepairCount > 0
+    ? `<div class="compact-item">
+        <strong>미해결 수리 티켓 ${formatNumber.format(openRepairCount)}건</strong>
+        <small>승인/반출/반납 화면의 수리 티켓 패널에서 처리하세요.</small>
+      </div>`
+    : "";
+  qs("#issue-list").innerHTML = issues.length || repairSummary
+    ? `${repairSummary}${issues.map((item) => `
       <div class="compact-item">
         <strong>${escapeHtml(item.code)} ${escapeHtml(item.name)}</strong>
-        <small>제외 ${formatNumber.format(item.unavailableQuantity)}${item.unit} · 반납불량 ${formatNumber.format(inspectionIssues.get(item.id) || 0)}${item.unit} · ${escapeHtml(item.notes || "확인 필요")}</small>
+        <small>제외 ${formatNumber.format(item.unavailableQuantity)}${item.unit} · 반납불량 ${formatNumber.format(inspectionIssues.get(item.id) || 0)}${item.unit} · 수리티켓 ${formatNumber.format(openRepairByItem.get(item.id) || 0)}건 · ${escapeHtml(item.notes || "확인 필요")}</small>
       </div>
-    `).join("")
+    `).join("")}`
     : `<div class="compact-item"><strong>이슈 없음</strong><small>현재 표시할 재고 이슈가 없습니다.</small></div>`;
 }
 
@@ -439,6 +468,115 @@ function renderReturnInspections() {
     : `<div class="compact-item"><strong>검수 이력 없음</strong><small>번호 없는 교구 반납 검수 기록이 아직 없습니다.</small></div>`;
 }
 
+function activeReturnApplication() {
+  return state.applications.find((entry) => entry.id === state.activeReturnApplicationId) || null;
+}
+
+// 해당 신청에서 이미 검수 기록이 있는 품목 ID 집합
+function inspectedItemIdsFor(applicationId) {
+  return new Set(
+    state.returnInspections
+      .filter((inspection) => inspection.applicationId === applicationId)
+      .map((inspection) => inspection.itemId)
+  );
+}
+
+// 신청 품목별 검수 진행 상황(검수됨/대기) 목록. 품목 클릭 시 검수 폼에 채운다.
+function renderReturnProgress() {
+  const container = qs("#return-application-progress");
+  const application = activeReturnApplication();
+  if (!application || application.status !== "returned") {
+    container.innerHTML = "";
+    return;
+  }
+  const inspected = inspectedItemIdsFor(application.id);
+  container.innerHTML = `
+    <div class="compact-item">
+      <strong>${escapeHtml(application.organization)} · ${escapeHtml(application.id)}</strong>
+      <small>품목별 검수 대기 목록 — 품목을 클릭하면 아래 폼에 채워집니다. 전 품목 검수 시 신청이 종결됩니다.</small>
+    </div>
+    ${application.items.map((line) => {
+      const item = itemById(line.itemId);
+      const done = inspected.has(line.itemId);
+      const quantity = Number(line.quantity || line.requestedQuantity || 0);
+      return `
+        <button class="compact-item return-progress-item" type="button" data-return-pick="${escapeHtml(line.itemId)}" ${done ? "disabled" : ""}>
+          <strong>${escapeHtml(item?.name || line.itemId)} ${formatNumber.format(quantity)}${escapeHtml(item?.unit || "")}</strong>
+          <small><span class="status-pill ${done ? "neutral" : "warn"}">${done ? "검수됨" : "검수 대기"}</span></small>
+        </button>
+      `;
+    }).join("")}
+  `;
+}
+
+function repairTicketActions(ticket, canManage) {
+  const buttons = [];
+  if (ticket.status === "open") buttons.push(["in_repair", "수리 시작"]);
+  if (ticket.status === "in_repair") {
+    buttons.push(["resolved", "수리 완료"]);
+    buttons.push(["scrapped", "폐기"]);
+  }
+  return buttons.map(([action, label]) => `
+    <button class="small-action" type="button" data-repair-action="${action}" data-repair-id="${escapeHtml(ticket.id)}" ${canManage ? "" : "disabled"}>${label}</button>
+  `).join("");
+}
+
+function repairStatusTone(status) {
+  if (status === "scrapped") return "bad";
+  if (status === "resolved") return "neutral";
+  return "warn";
+}
+
+function renderRepairTickets() {
+  const effectiveRole = state.session?.user?.role || state.currentRole;
+  const canManage = ["staff", "admin"].includes(effectiveRole);
+  const tickets = state.repairTickets.slice(0, 12);
+  qs("#repair-ticket-list").innerHTML = tickets.length
+    ? tickets.map((ticket) => {
+      const item = itemById(ticket.itemId);
+      return `
+        <div class="compact-item">
+          <strong>${escapeHtml(item?.name || ticket.itemId)} ${formatNumber.format(ticket.quantity)}${escapeHtml(item?.unit || "")} · ${escapeHtml(repairIssueLabels[ticket.issueType] || ticket.issueType)}</strong>
+          <small>${escapeHtml(ticket.id)} · 검수 ${escapeHtml(ticket.inspectionId || "-")} · ${escapeHtml(ticket.createdBy || "")}</small>
+          <small>${escapeHtml(ticket.note || "메모 없음")}</small>
+          ${ticket.status === "resolved" ? `<small>재고 복귀 ${formatNumber.format(ticket.returnedToRentable || 0)}${escapeHtml(item?.unit || "")}</small>` : ""}
+          <div class="form-actions">
+            <span class="status-pill ${repairStatusTone(ticket.status)}">${escapeHtml(repairStatusLabels[ticket.status] || ticket.status)}</span>
+            ${repairTicketActions(ticket, canManage)}
+          </div>
+        </div>
+      `;
+    }).join("")
+    : `<div class="compact-item"><strong>수리 티켓 없음</strong><small>반납 검수에서 파손/수리 수량이 기록되면 자동 생성됩니다.</small></div>`;
+}
+
+async function handleRepairAction(action, ticketId) {
+  const ticket = state.repairTickets.find((entry) => entry.id === ticketId);
+  if (!ticket) return;
+  const payload = { status: action };
+  if (action === "resolved") {
+    const input = prompt(`재고로 복귀할 수량을 입력하세요 (0 ~ ${ticket.quantity})`, String(ticket.quantity));
+    if (input === null) return;
+    const returned = Number(input);
+    if (!Number.isFinite(returned) || returned < 0 || returned > ticket.quantity) {
+      alert(`0 이상 ${ticket.quantity} 이하의 숫자를 입력하세요.`);
+      return;
+    }
+    payload.returnedToRentable = returned;
+  }
+  if (action === "scrapped" && !confirm("해당 수량을 폐기 처리할까요? 재고로 복귀되지 않습니다.")) return;
+
+  try {
+    await fetchJson(`/api/repairs/${encodeURIComponent(ticketId)}/status`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    await loadData();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
 function updateReturnHint() {
   const checkedOut = Number(qs("#return-checked-out").value || 0);
   const total = ["#return-normal", "#return-damaged", "#return-repair", "#return-lost"]
@@ -585,20 +723,27 @@ async function handleApplicationAction(action, applicationId) {
   }
 }
 
-function prefillReturnFromApplication(application) {
-  const firstItem = application.items[0];
+// 신청의 품목 하나를 검수 폼에 채운다. itemId를 넘기지 않으면 첫 미검수 품목을 고른다.
+function prefillReturnFromApplication(application, itemId = null) {
+  const inspected = inspectedItemIdsFor(application.id);
+  const target = itemId
+    ? application.items.find((line) => line.itemId === itemId)
+    : application.items.find((line) => !inspected.has(line.itemId)) || application.items[0];
   const loan = loanByApplication(application.id);
-  if (!firstItem) return;
   state.activeReturnApplicationId = application.id;
   state.activeReturnLoanId = loan?.id || null;
-  qs("#return-item").value = firstItem.itemId;
+  renderReturnProgress();
+  if (!target) return;
+  const quantity = Number(target.quantity || target.requestedQuantity || 1);
+  const item = itemById(target.itemId);
+  qs("#return-item").value = target.itemId;
   qs("#return-organization").value = application.organization;
-  qs("#return-checked-out").value = firstItem.quantity || firstItem.requestedQuantity || 1;
-  qs("#return-normal").value = firstItem.quantity || firstItem.requestedQuantity || 1;
+  qs("#return-checked-out").value = quantity;
+  qs("#return-normal").value = quantity;
   qs("#return-damaged").value = 0;
   qs("#return-repair").value = 0;
   qs("#return-lost").value = 0;
-  qs("#return-note").value = `${application.id} 반납 검수`;
+  qs("#return-note").value = `${application.id} ${item?.name || target.itemId} 반납 검수`;
   updateReturnHint();
   switchView("operations");
 }
@@ -623,9 +768,17 @@ async function submitReturnInspection(event) {
       method: "POST",
       body: JSON.stringify(payload)
     });
-    state.activeReturnApplicationId = null;
-    state.activeReturnLoanId = null;
     await loadData();
+    const application = activeReturnApplication();
+    if (application && application.status === "returned") {
+      // 아직 검수 대기 품목이 남음: 다음 품목을 폼에 채운다.
+      prefillReturnFromApplication(application);
+    } else {
+      // 전 품목 검수 완료(신청 종결) 또는 독립 검수: 진행 목록을 정리한다.
+      state.activeReturnApplicationId = null;
+      state.activeReturnLoanId = null;
+      renderReturnProgress();
+    }
   } catch (error) {
     alert(error.message);
   }
@@ -841,7 +994,9 @@ function renderAll() {
   renderMembers();
   renderOrganizations();
   renderReturnItemOptions();
+  renderReturnProgress();
   renderReturnInspections();
+  renderRepairTickets();
   renderStats();
   renderLabels();
   updateReturnHint();
@@ -865,10 +1020,15 @@ async function loadData() {
   const memberRequest = effectiveRole === "applicant"
     ? Promise.resolve({ members: [], organizations: [], summary: null })
     : fetchJson("/api/members");
-  const [inventoryData, applicationData, returnData, memberData, statsData, labelData] = await Promise.all([
+  // 수리 티켓은 staff/admin/auditor만 조회 가능
+  const repairRequest = effectiveRole === "applicant"
+    ? Promise.resolve({ repairTickets: [] })
+    : fetchJson("/api/repairs");
+  const [inventoryData, applicationData, returnData, repairData, memberData, statsData, labelData] = await Promise.all([
     fetchJson("/api/inventory"),
     fetchJson("/api/applications"),
     fetchJson("/api/returns"),
+    repairRequest,
     memberRequest,
     fetchJson("/api/stats"),
     fetchJson("/api/labels?limit=80")
@@ -880,6 +1040,7 @@ async function loadData() {
   state.applications = applicationData.applications;
   state.loans = applicationData.loans || [];
   state.returnInspections = returnData.returnInspections;
+  state.repairTickets = repairData.repairTickets || [];
   state.members = memberData.members || [];
   state.organizations = memberData.organizations || [];
   state.memberSummary = memberData.summary || null;
@@ -906,6 +1067,17 @@ document.addEventListener("click", (event) => {
   const appAction = event.target.closest("[data-app-action]");
   if (appAction) {
     handleApplicationAction(appAction.dataset.appAction, appAction.dataset.appId);
+  }
+
+  const returnPick = event.target.closest("[data-return-pick]");
+  if (returnPick) {
+    const application = activeReturnApplication();
+    if (application) prefillReturnFromApplication(application, returnPick.dataset.returnPick);
+  }
+
+  const repairAction = event.target.closest("[data-repair-action]");
+  if (repairAction) {
+    handleRepairAction(repairAction.dataset.repairAction, repairAction.dataset.repairId);
   }
 
   const inventoryEdit = event.target.closest("[data-inventory-edit]");

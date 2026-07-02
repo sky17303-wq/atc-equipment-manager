@@ -655,6 +655,32 @@ tbody tr:hover {
   margin-top: 18px;
 }
 
+/* 신청 품목별 검수 진행 목록 (품목 클릭 시 검수 폼 자동 채움) */
+.return-progress {
+  margin-bottom: 16px;
+}
+
+.return-progress:empty {
+  display: none;
+}
+
+.return-progress-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.return-progress-item:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.return-progress-item:not(:disabled):hover {
+  border-color: var(--teal-strong, #0f766e);
+}
+
 .condition-summary {
   display: flex;
   flex-wrap: wrap;

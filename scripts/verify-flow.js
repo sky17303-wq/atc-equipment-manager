@@ -33,6 +33,20 @@ async function postJson(pathname, role, body) {
   return payload;
 }
 
+// 실패(4xx)가 기대되는 호출: 기대한 상태 코드가 아니면 오류를 던진다.
+async function postExpectStatus(pathname, role, body, expectedStatus) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: "POST",
+    headers: headers(role),
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json();
+  if (response.status !== expectedStatus) {
+    throw new Error(`${pathname} expected ${expectedStatus}, got ${response.status}: ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
 async function putJson(pathname, role, body) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     method: "PUT",
@@ -118,6 +132,79 @@ async function run() {
     applicantApplications.applications.some((entry) => entry.id === reservation.applicationId)
   );
 
+  // --- 다품목 품목별 부분 검수 + 수리 티켓 시나리오 ---
+  const inventoryBefore = await getJson("/api/inventory", "staff");
+  const r06Before = inventoryBefore.inventory.find((item) => item.id === "r06");
+
+  const multi = await postJson("/api/applications", "applicant", {
+    draft: {
+      organization: "테스트초등학교",
+      applicant: "박교사",
+      purpose: "다품목 부분 검수 검증",
+      startDate: "2026-07-06",
+      endDate: "2026-07-07",
+      items: [
+        { itemId: "r01", quantity: 2 },
+        { itemId: "r06", quantity: 1 }
+      ]
+    }
+  });
+  const multiId = multi.application.id;
+  await postJson(`/api/applications/${encodeURIComponent(multiId)}/approve`, "staff", {});
+  const multiCheckedOut = await postJson(`/api/applications/${encodeURIComponent(multiId)}/checkout`, "staff", {});
+  await postJson(`/api/applications/${encodeURIComponent(multiId)}/return`, "staff", {});
+  const multiLoan = multiCheckedOut.loans.find((entry) => entry.applicationId === multiId);
+
+  // 품목 1 검수: 부분 검수라 신청은 returned 유지
+  const partialPayload = {
+    applicationId: multiId,
+    loanId: multiLoan.id,
+    itemId: "r01",
+    organization: "테스트초등학교",
+    checkedOutQuantity: 2,
+    normalQuantity: 2,
+    damagedQuantity: 0,
+    repairQuantity: 0,
+    lostQuantity: 0,
+    note: "다품목 부분 검수 1/2"
+  };
+  const partial = await postJson("/api/returns/inspect", "staff", partialPayload);
+
+  // 같은 품목 중복 검수는 409
+  await postExpectStatus("/api/returns/inspect", "staff", partialPayload, 409);
+
+  // 품목 2 검수(파손 1 포함): 전 품목 완료 → 신청 closed + 수리 티켓 자동 생성
+  const finalInspection = await postJson("/api/returns/inspect", "staff", {
+    applicationId: multiId,
+    loanId: multiLoan.id,
+    itemId: "r06",
+    organization: "테스트초등학교",
+    checkedOutQuantity: 1,
+    normalQuantity: 0,
+    damagedQuantity: 1,
+    repairQuantity: 0,
+    lostQuantity: 0,
+    note: "다품목 부분 검수 2/2 (파손 1)"
+  });
+
+  const applicationsAfterMulti = await getJson("/api/applications", "staff");
+  const multiLoanAfter = applicationsAfterMulti.loans.find((entry) => entry.applicationId === multiId);
+
+  const repairs = await getJson("/api/repairs", "staff");
+  const multiTicket = repairs.repairTickets.find((entry) => entry.inspectionId === finalInspection.inspection.id);
+  const inRepair = await postJson(`/api/repairs/${encodeURIComponent(multiTicket.id)}/status`, "staff", {
+    status: "in_repair",
+    note: "수리 업체 발송"
+  });
+  const resolved = await postJson(`/api/repairs/${encodeURIComponent(multiTicket.id)}/status`, "staff", {
+    status: "resolved",
+    returnedToRentable: 1,
+    note: "수리 완료 후 재고 복귀"
+  });
+  // resolved 후 검수 차감(파손 1)이 상쇄되어 r06 재고가 원상 복구되어야 한다.
+  const inventoryAfter = await getJson("/api/inventory", "staff");
+  const r06After = inventoryAfter.inventory.find((item) => item.id === "r06");
+
   const result = {
     health: health.ok,
     aiStatus: ai.status,
@@ -134,7 +221,18 @@ async function run() {
     statsItems: stats.totals.items,
     labels: labels.labels.length,
     applicantScope: applicantScopeOk,
-    reservationScope: reservationScopeOk
+    reservationScope: reservationScopeOk,
+    multiPartialStatus: partial.application?.status,
+    multiPartialPending: partial.applicationProgress?.pendingItemIds?.join(","),
+    multiClosedStatus: finalInspection.application?.status,
+    multiLoanClosed: multiLoanAfter?.status,
+    repairTicketStatus: multiTicket?.status,
+    repairTicketQuantity: multiTicket?.quantity,
+    repairInRepair: inRepair.repairTicket.status,
+    repairResolved: resolved.repairTicket.status,
+    repairInventoryRestored:
+      r06After.rentableQuantity === r06Before.rentableQuantity &&
+      r06After.unavailableQuantity === r06Before.unavailableQuantity
   };
 
   console.log(JSON.stringify(result, null, 2));
@@ -155,7 +253,16 @@ async function run() {
     result.statsItems === 21 &&
     result.labels === 3 &&
     result.applicantScope &&
-    result.reservationScope;
+    result.reservationScope &&
+    result.multiPartialStatus === "returned" &&
+    result.multiPartialPending === "r06" &&
+    result.multiClosedStatus === "closed" &&
+    result.multiLoanClosed === "closed" &&
+    result.repairTicketStatus === "open" &&
+    result.repairTicketQuantity === 1 &&
+    result.repairInRepair === "in_repair" &&
+    result.repairResolved === "resolved" &&
+    result.repairInventoryRestored;
 
   if (!passed) throw new Error("verification failed");
 }
