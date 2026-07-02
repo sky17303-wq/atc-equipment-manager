@@ -105,6 +105,19 @@ async function run() {
   const stats = await getJson("/api/stats");
   const labels = await getJson("/api/labels?limit=3");
 
+  // 사용자별 데이터 범위 제한: applicant는 본인(user@ssem.re.kr) 신청만 조회된다.
+  const staffApplications = await getJson("/api/applications", "staff");
+  const applicantApplications = await getJson("/api/applications", "applicant");
+  const applicantScopeOk =
+    applicantApplications.applications.length >= 1 &&
+    applicantApplications.applications.every((entry) => entry.email === "user@ssem.re.kr") &&
+    staffApplications.applications.length >= applicantApplications.applications.length;
+  const applicantInventory = await getJson("/api/inventory", "applicant");
+  const reservationScopeOk = applicantInventory.reservations.every((reservation) =>
+    reservation.applicationId === null ||
+    applicantApplications.applications.some((entry) => entry.id === reservation.applicationId)
+  );
+
   const result = {
     health: health.ok,
     aiStatus: ai.status,
@@ -119,7 +132,9 @@ async function run() {
     memberStatus: updatedMember.member.status,
     memberCount: members.summary.total,
     statsItems: stats.totals.items,
-    labels: labels.labels.length
+    labels: labels.labels.length,
+    applicantScope: applicantScopeOk,
+    reservationScope: reservationScopeOk
   };
 
   console.log(JSON.stringify(result, null, 2));
@@ -138,7 +153,9 @@ async function run() {
     result.memberStatus === "active" &&
     result.memberCount === 5 &&
     result.statsItems === 21 &&
-    result.labels === 3;
+    result.labels === 3 &&
+    result.applicantScope &&
+    result.reservationScope;
 
   if (!passed) throw new Error("verification failed");
 }
